@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -14,9 +15,8 @@
 module Hedgehog.Internal.State (
   -- * Variables
     Var(..)
-  , Symbolic(..)
-  , Concrete(..)
-
+  , Representation(..)
+  , Instantiation(..)
   -- * Environment
   , Environment(..)
   , EnvironmentError(..)
@@ -40,6 +40,9 @@ module Hedgehog.Internal.State (
   , actions
   , execute
   , executeSequential
+
+  -- * Functor
+  , HTraversable(..)
   ) where
 
 import           Control.Monad (when, foldM_)
@@ -51,7 +54,6 @@ import           Control.Monad.Trans.State (StateT, execState, evalStateT)
 
 import           Data.Dynamic (Dynamic, toDyn, fromDynamic, dynTypeRep)
 import           Data.Foldable (traverse_)
-import           Data.Functor.Classes (Eq1(..), Ord1(..), Show1(..), showsPrec1)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Maybe as Maybe
@@ -59,7 +61,7 @@ import           Data.Typeable (Typeable, TypeRep, Proxy(..), typeRep)
 
 import           Hedgehog.Internal.Gen (Gen)
 import qualified Hedgehog.Internal.Gen as Gen
-import           Hedgehog.Internal.HTraversable (HTraversable(..))
+
 import           Hedgehog.Internal.Property (Test, liftEither, withCatch, success)
 import qualified Hedgehog.Internal.Shrink as Shrink
 import           Hedgehog.Internal.Source (HasCallStack, withFrozenCallStack)
@@ -72,51 +74,37 @@ newtype Var =
   Var Int
   deriving (Eq, Ord, Show, Num)
 
--- | Symbolic values.
---
-data Symbolic a where
-  Symbolic :: Typeable a => Var -> Symbolic a
+-- | A Kind representation with types
+--   Symbolic and Concrete
+data Representation
+  = Symbolic
+  | Concrete
 
-deriving instance Eq (Symbolic a)
-deriving instance Ord (Symbolic a)
+-- | Representation
+data Instantiation :: Representation -> * -> * where
+  SI :: Typeable a => Var -> Instantiation 'Symbolic a
+  CI :: a -> Instantiation 'Concrete a
 
-instance Show (Symbolic a) where
-  showsPrec p (Symbolic x) =
+class HTraversable (t :: Representation -> *) where
+  htraverse :: Applicative f => (forall a. Instantiation g a -> f (Instantiation h a)) -> t g -> f (t h)
+
+instance Show x => Show (Instantiation v x) where
+  showsPrec p (SI x) =
+    showsPrec p x
+  showsPrec p (CI x) =
     showsPrec p x
 
-instance Show1 Symbolic where
-  liftShowsPrec _ _ p (Symbolic x) =
-    showsPrec p x
-
-instance Eq1 Symbolic where
-  liftEq _ (Symbolic x) (Symbolic y) =
+instance Eq x => Eq (Instantiation v x) where
+  (==) (SI x) (SI y) =
+    x == y
+  (==) (CI x) (CI y) =
     x == y
 
-instance Ord1 Symbolic where
-  liftCompare _ (Symbolic x) (Symbolic y) =
+instance Ord x => Ord (Instantiation v x) where
+  compare (SI x) (SI y) =
     compare x y
-
--- | Concrete values.
---
-newtype Concrete a where
-  Concrete :: a -> Concrete a
-  deriving (Eq, Ord, Functor, Foldable, Traversable)
-
-instance Show a => Show (Concrete a) where
-  showsPrec =
-    showsPrec1
-
-instance Show1 Concrete where
-  liftShowsPrec sp _ p (Concrete x) =
-    sp p x
-
-instance Eq1 Concrete where
-  liftEq eq (Concrete x) (Concrete y) =
-    eq x y
-
-instance Ord1 Concrete where
-  liftCompare comp (Concrete x) (Concrete y) =
-    comp x y
+  compare (CI x) (CI y) =
+    compare x y
 
 ------------------------------------------------------------------------
 -- Symbolic Environment
@@ -143,25 +131,25 @@ emptyEnvironment =
 
 -- | Insert a symbolic / concrete pairing in to the environment.
 --
-insertConcrete :: Symbolic a -> Concrete a -> Environment -> Environment
-insertConcrete (Symbolic k) (Concrete v) =
+insertConcrete :: Instantiation 'Symbolic a -> Instantiation 'Concrete a -> Environment -> Environment
+insertConcrete (SI k) (CI v) =
   Environment . Map.insert k (toDyn v) . unEnvironment
 
 -- | Cast a 'Dynamic' in to a concrete value.
 --
-reifyDynamic :: forall a. Typeable a => Dynamic -> Either EnvironmentError (Concrete a)
+reifyDynamic :: forall a. Typeable a => Dynamic -> Either EnvironmentError (Instantiation 'Concrete a)
 reifyDynamic dyn =
   case fromDynamic dyn of
     Nothing ->
       Left $ EnvironmentTypeError (typeRep (Proxy :: Proxy a)) (dynTypeRep dyn)
     Just x ->
-      Right $ Concrete x
+      Right $ CI x
 
 -- | Turns an environment in to a function for looking up a concrete value from
 --   a symbolic one.
 --
-reifyEnvironment :: Environment -> (forall a. Symbolic a -> Either EnvironmentError (Concrete a))
-reifyEnvironment (Environment vars) (Symbolic n) =
+reifyEnvironment :: Environment -> (forall a. Instantiation 'Symbolic a -> Either EnvironmentError (Instantiation 'Concrete a))
+reifyEnvironment (Environment vars) (SI n) =
   case Map.lookup n vars of
     Nothing ->
       Left $ EnvironmentValueNotFound n
@@ -170,7 +158,7 @@ reifyEnvironment (Environment vars) (Symbolic n) =
 
 -- | Convert a symbolic structure to a concrete one, using the provided environment.
 --
-reify :: HTraversable t => Environment -> t Symbolic -> Either EnvironmentError (t Concrete)
+reify :: HTraversable t => Environment -> t 'Symbolic -> Either EnvironmentError (t 'Concrete)
 reify vars =
   htraverse (reifyEnvironment vars)
 
@@ -179,29 +167,29 @@ reify vars =
 
 -- | Optional command configuration.
 --
-data Callback input output m state =
+data Callback (input :: Representation -> *) (output :: *) m (state :: Representation -> *) =
   -- | A pre-condition for a command that must be verified before the command
   --   can be executed. This is mainly used during shrinking to ensure that it
   --   is still OK to run a command despite the fact that some previously
   --   executed commands may have been removed from the sequence.
   --
-    Require (state Symbolic -> input Symbolic -> Bool)
+    Require (state 'Symbolic -> input 'Symbolic -> Bool)
 
   -- | Updates the model state, given the input and output of the command. Note
   --   that this function is polymorphic in the type of values. This is because
   --   it must work over 'Symbolic' values when we are generating actions, and
   --   'Concrete' values when we are executing them.
   --
-  | Update (forall v. Ord1 v => state v -> input v -> v output -> state v)
+  | Update (forall v. state v -> input v -> Instantiation v output -> state v)
 
   -- | A post-condition for a command that must be verified for the command to
   --   be considered a success.
   --
-  | Ensure (state Concrete -> input Concrete -> output -> Test m ())
+  | Ensure (state 'Concrete -> input 'Concrete -> output -> Test m ())
 
 callbackRequire1 ::
-     state Symbolic
-  -> input Symbolic
+     state 'Symbolic
+  -> input 'Symbolic
   -> Callback input output m state
   -> Bool
 callbackRequire1 s i = \case
@@ -213,10 +201,9 @@ callbackRequire1 s i = \case
     True
 
 callbackUpdate1 ::
-     Ord1 v
-  => state v
+     state v
   -> input v
-  -> v output
+  -> Instantiation v output
   -> Callback input output m state
   -> state v
 callbackUpdate1 s i o = \case
@@ -229,8 +216,8 @@ callbackUpdate1 s i o = \case
 
 callbackEnsure1 ::
      Monad m
-  => state Concrete
-  -> input Concrete
+  => state 'Concrete
+  -> input 'Concrete
   -> output
   -> Callback input output m state
   -> Test m ()
@@ -244,18 +231,17 @@ callbackEnsure1 s i o = \case
 
 callbackRequire ::
      [Callback input output m state]
-  -> state Symbolic
-  -> input Symbolic
+  -> state 'Symbolic
+  -> input 'Symbolic
   -> Bool
 callbackRequire callbacks s i =
   all (callbackRequire1 s i) callbacks
 
 callbackUpdate ::
-     Ord1 v
-  => [Callback input output m state]
+     [Callback input output m state]
   -> state v
   -> input v
-  -> v output
+  -> Instantiation v output
   -> state v
 callbackUpdate callbacks s0 i o =
   foldl (\s -> callbackUpdate1 s i o) s0 callbacks
@@ -263,8 +249,8 @@ callbackUpdate callbacks s0 i o =
 callbackEnsure ::
      Monad m
   => [Callback input output m state]
-  -> state Concrete
-  -> input Concrete
+  -> state 'Concrete
+  -> input 'Concrete
   -> output
   -> Test m ()
 callbackEnsure callbacks s i o =
@@ -274,21 +260,21 @@ callbackEnsure callbacks s i o =
 
 -- | The specification for the expected behaviour of an 'Action'.
 --
-data Command n m (state :: (* -> *) -> *) =
-  forall input output.
-  (HTraversable input, Show (input Symbolic), Typeable output) =>
+data Command n m (state :: Representation -> *) =
+  forall (input :: Representation -> *) (output :: *).
+  (HTraversable input, Show (input 'Symbolic), Typeable output, Show (Instantiation 'Symbolic output)) =>
   Command {
     -- | A generator which provides random arguments for a command. If the
     --   command cannot be executed in the current state, it should return
     --   'Nothing'.
     --
       commandGen ::
-        state Symbolic -> Maybe (Gen n (input Symbolic))
+        state 'Symbolic -> Maybe (Gen n (input 'Symbolic))
 
     -- | Executes a command using the arguments generated by 'commandGen'.
     --
     , commandExecute ::
-        input Concrete -> Test m output
+        input 'Concrete -> Test m output
 
     -- | A set of callbacks which provide optional command configuration such
     --   as pre-condtions, post-conditions and state updates.
@@ -299,34 +285,34 @@ data Command n m (state :: (* -> *) -> *) =
 
 -- | Checks that input for a command can be executed in the given state.
 --
-commandGenOK :: Command n m state -> state Symbolic -> Bool
+commandGenOK :: Command n m state -> state 'Symbolic -> Bool
 commandGenOK (Command inputGen _ _) state =
   Maybe.isJust (inputGen state)
 
 -- | An instantiation of a 'Command' which can be executed, and its effect
 --   evaluated.
 --
-data Action m (state :: (* -> *) -> *) =
-  forall input output.
-  (HTraversable input, Show (input Symbolic)) =>
+data Action m (state :: Representation -> *) =
+  forall (input :: Representation -> *) (output :: *).
+  (HTraversable input, Show (input 'Symbolic), Show (Instantiation 'Symbolic output)) =>
   Action {
       actionInput ::
-        input Symbolic
+        input 'Symbolic
 
     , actionOutput ::
-        Symbolic output
+        Instantiation 'Symbolic output
 
     , actionExecute ::
-        input Concrete -> Test m output
+        input 'Concrete -> Test m output
 
     , actionRequire ::
-        state Symbolic -> input Symbolic -> Bool
+        state 'Symbolic -> input 'Symbolic -> Bool
 
     , actionUpdate ::
-        forall v. Ord1 v => state v -> input v -> v output -> state v
+        forall v. state v -> input v -> Instantiation v output -> state v
 
     , actionEnsure ::
-        state Concrete -> input Concrete -> output -> Test m ()
+        state 'Concrete -> input 'Concrete -> output -> Test m ()
     }
 
 instance Show (Action m state) where
@@ -338,13 +324,13 @@ instance Show (Action m state) where
 
 -- | Extract the variable name and the type from a symbolic value.
 --
-takeSymbolic :: forall a. Symbolic a -> (Var, TypeRep)
-takeSymbolic (Symbolic var) =
+takeSymbolic :: forall a. Instantiation 'Symbolic a -> (Var, TypeRep)
+takeSymbolic (SI var) =
   (var, typeRep (Proxy :: Proxy a))
 
 -- | Insert a symbolic variable in to a map of variables to types.
 --
-insertSymbolic :: Symbolic a -> Map Var TypeRep -> Map Var TypeRep
+insertSymbolic :: Instantiation 'Symbolic a -> Map Var TypeRep -> Map Var TypeRep
 insertSymbolic s =
   let
     (var, typ) =
@@ -355,7 +341,7 @@ insertSymbolic s =
 -- | Collects all the symbolic values in a data structure and produces a set of
 --   all the variables they refer to.
 --
-takeVariables :: forall t. HTraversable t => t Symbolic -> Map Var TypeRep
+takeVariables :: forall t. HTraversable t => t 'Symbolic -> Map Var TypeRep
 takeVariables xs =
   let
     go x = do
@@ -367,7 +353,7 @@ takeVariables xs =
 -- | Checks that the symbolic values in the data structure refer only to the
 --   variables in the provided set, and that they are of the correct type.
 --
-variablesOK :: HTraversable t => t Symbolic -> Map Var TypeRep -> Bool
+variablesOK :: HTraversable t => t 'Symbolic -> Map Var TypeRep -> Bool
 variablesOK xs allowed =
   let
     vars =
@@ -404,7 +390,7 @@ dropInvalid initial =
 action ::
      (Monad n, Monad m)
   => [Command n m state]
-  -> Gen (StateT (state Symbolic, Var) n) (Action m state)
+  -> Gen (StateT (state 'Symbolic, Var) n) (Action m state)
 action commands =
   Gen.just $ do
     (state, var) <- get
@@ -425,7 +411,7 @@ action commands =
     else do
       let
         output =
-          Symbolic var
+          SI var
 
       put (callbackUpdate callbacks state input output, var + 1)
 
@@ -454,9 +440,9 @@ actions range initial =
 --
 execute ::
      (HasCallStack, Monad m)
-  => (state Concrete, Environment)
+  => (state 'Concrete, Environment)
   -> Action m state
-  -> Test m (state Concrete, Environment)
+  -> Test m (state 'Concrete, Environment)
 execute (state0, env0) (Action sinput soutput exec _require update ensure) =
   withFrozenCallStack $ do
     input <- liftEither $ reify env0 sinput
@@ -464,7 +450,7 @@ execute (state0, env0) (Action sinput soutput exec _require update ensure) =
 
     let
       coutput =
-        Concrete output
+        CI output
 
       state =
         update state0 input coutput

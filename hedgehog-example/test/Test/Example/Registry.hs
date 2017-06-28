@@ -1,6 +1,8 @@
 --
 -- Translated from https://github.com/rjmh/registry/blob/master/registry_eqc.erl
 --
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TemplateHaskell #-}
 module Test.Example.Registry where
@@ -34,7 +36,8 @@ import           System.IO.Unsafe (unsafePerformIO)
 --
 
 data Pid v =
-  Pid (v Int)
+  Pid (Instantiation v Int)
+  deriving (Eq, Ord, Show)
 
 data Name =
   Name String
@@ -49,24 +52,6 @@ data State v =
 initialState :: State v
 initialState =
   State Set.empty Map.empty
-
---
--- FIXME derive automatically, this isn't fun :(
---
-
-instance Eq1 v => Eq (Pid v) where
-  (==) (Pid x) (Pid y) =
-    eq1 x y
-
-instance Ord1 v => Ord (Pid v) where
-  compare (Pid x) (Pid y) =
-    compare1 x y
-
-instance Show1 v => Show (Pid v) where
-  showsPrec p (Pid x) =
-    showParen (p >= 11) $
-      showString "Pid " .
-      showsPrec1 11 x
 
 instance HTraversable Pid where
   htraverse f (Pid v) =
@@ -85,7 +70,7 @@ instance HTraversable Pid where
 --   S#state{pids=S#state.pids++[Pid]}.
 --
 
-data Spawn (v :: * -> *) =
+data Spawn (v :: Representation) =
   Spawn
   deriving (Eq, Show)
 
@@ -132,7 +117,7 @@ spawn =
 --   not lists:keymember(Pid,2,S#state.regs).
 --
 
-data Register v =
+data Register (v :: Representation) =
   Register Name (Pid v)
   deriving (Eq, Show)
 
@@ -159,7 +144,8 @@ register =
               <$> genName
               <*> Gen.element xs
 
-    execute (Register (Name name) (Pid (Concrete pid))) =
+    execute :: Register 'Concrete -> Test IO ()
+    execute (Register (Name name) (Pid (CI pid))) =
       liftIO $ ioRegister name pid
   in
     Command gen execute [
@@ -192,7 +178,7 @@ register =
 --   S#state{regs=lists:keydelete(Name,1,S#state.regs)}.
 --
 
-data Unregister (v :: * -> *) =
+data Unregister (v :: Representation) =
   Unregister Name
   deriving (Eq, Show)
 
@@ -207,6 +193,7 @@ unregister =
       Just $
         Unregister <$> genName
 
+    execute :: Unregister 'Concrete -> Test IO ()
     execute (Unregister (Name name)) =
       liftIO $ ioUnregister name
   in

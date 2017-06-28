@@ -101,8 +101,8 @@ module Hedgehog (
   , Action
   , executeSequential
 
-  , Concrete(..)
-  , Symbolic(..)
+  , Representation(..)
+  , Instantiation(..)
   , Var
   , Opaque(..)
 
@@ -126,7 +126,6 @@ import           Data.Functor.Classes (Eq1, eq1, Ord1, compare1, Show1, showsPre
 
 import           Hedgehog.Internal.Distributive (Distributive(..))
 import           Hedgehog.Internal.Gen (Gen)
-import           Hedgehog.Internal.HTraversable (HTraversable(..))
 import           Hedgehog.Internal.Opaque (Opaque(..))
 import           Hedgehog.Internal.Property (annotate, annotateShow)
 import           Hedgehog.Internal.Property (assert, (===))
@@ -143,8 +142,8 @@ import           Hedgehog.Internal.Property (withCatch, withExceptT, withResourc
 import           Hedgehog.Internal.Range (Range, Size(..))
 import           Hedgehog.Internal.Runner (check, recheck, checkSequential, checkParallel)
 import           Hedgehog.Internal.Seed (Seed(..))
-import           Hedgehog.Internal.State (Command(..), Callback(..), Action)
+import           Hedgehog.Internal.State (Command(..), Callback(..), Action, HTraversable(..))
 import           Hedgehog.Internal.State (executeSequential)
-import           Hedgehog.Internal.State (Var(..), Symbolic(..), Concrete(..))
+import           Hedgehog.Internal.State (Var(..), Representation(..), Instantiation(..))
 import           Hedgehog.Internal.TH (discover)
 import           Hedgehog.Internal.Tripping (tripping)

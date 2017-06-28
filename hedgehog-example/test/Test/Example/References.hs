@@ -1,6 +1,8 @@
 --
 -- Translated from https://github.com/advancedtelematic/quickcheck-state-machine/blob/7e3056d493ad430cfacd62da7878955e80fd296f/example/src/MutableReference.hs
 --
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TemplateHaskell #-}
 module Test.Example.References where
@@ -16,12 +18,12 @@ import           Hedgehog
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
-
 ------------------------------------------------------------------------
 -- State
 
 data Ref v =
-  Ref (v (Opaque (IORef Int)))
+  Ref (Instantiation v (Opaque (IORef Int)))
+  deriving (Eq, Show)
 
 data State v =
   State {
@@ -32,16 +34,6 @@ initialState :: State v
 initialState =
   State []
 
-instance Eq1 v => Eq (Ref v) where
-  (==) (Ref x) (Ref y) =
-    eq1 x y
-
-instance Show1 v => Show (Ref v) where
-  showsPrec p (Ref x) =
-    showParen (p >= 11) $
-      showString "Ref " .
-      showsPrec1 11 x
-
 instance HTraversable Ref where
   htraverse f (Ref v) =
     fmap Ref (f v)
@@ -49,7 +41,7 @@ instance HTraversable Ref where
 ------------------------------------------------------------------------
 -- NewRef
 
-data NewRef (v :: * -> *) =
+data NewRef (v :: Representation) =
   NewRef
   deriving (Eq, Show)
 
@@ -64,6 +56,7 @@ newRef =
       Just $
         pure NewRef
 
+    execute :: NewRef 'Concrete -> Test IO (Opaque (IORef Int))
     execute _i =
       fmap Opaque . liftIO $ IORef.newIORef 0
   in
@@ -95,7 +88,8 @@ readRef =
           Just $
             ReadRef <$> Gen.element (fmap fst xs)
 
-    execute (ReadRef (Ref (Concrete (Opaque ref)))) =
+    execute :: ReadRef 'Concrete -> Test IO Int
+    execute (ReadRef (Ref (CI (Opaque ref)))) =
       liftIO $ IORef.readIORef ref
   in
     Command gen execute [
@@ -130,7 +124,8 @@ writeRef =
               <$> Gen.element (fmap fst xs)
               <*> Gen.int (Range.linear 0 100)
 
-    execute (WriteRef (Ref (Concrete (Opaque ref))) x) =
+    execute :: WriteRef 'Concrete -> Test IO ()
+    execute (WriteRef (Ref (CI (Opaque ref))) x) =
       liftIO $ IORef.writeIORef ref x
   in
     Command gen execute [
@@ -164,7 +159,8 @@ incRef =
           Just $
             IncRef <$> Gen.element (fmap fst xs)
 
-    execute (IncRef (Ref (Concrete (Opaque ref)))) = do
+    execute :: IncRef 'Concrete -> Test IO ()
+    execute (IncRef (Ref (CI (Opaque ref)))) = do
       x <- liftIO $ IORef.readIORef ref
       liftIO $ IORef.writeIORef ref (x + 2) -- deliberate bug
   in
