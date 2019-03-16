@@ -113,7 +113,7 @@ import           Data.Functor.Identity (Identity(..))
 import           Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
 import qualified Data.List as List
-import           Data.Semigroup (Semigroup)
+import           Data.Semigroup (Semigroup(..))
 import           Data.String (IsString)
 import           Data.Typeable (typeOf)
 
@@ -173,6 +173,7 @@ instance Semigroup Classifications where
     HM.foldrWithKey (HM.insertWith (+)) c1 c2
 
 instance Monoid Classifications where
+  mappend = (<>)
   mempty = Classifications mempty
 
 -- | Create the Classifications object with a single entry

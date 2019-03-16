@@ -8,7 +8,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
 module Hedgehog.Internal.Report (
   -- * Report
     Summary(..)
@@ -739,8 +738,10 @@ ppClassifications (Classifications cls)
     percentage :: Integer -> Double
     percentage v =
       let
+        percentage' :: Double
         percentage' = fromIntegral v / totalClassifiers * 100
-        thousandths = round @Double @Integer $ percentage' * 10
+        thousandths :: Integer
+        thousandths = round $ percentage' * 10
       in fromIntegral thousandths / 10
     totalClassifiers = foldr (+) 0.0 (fromIntegral <$> cls)
 
