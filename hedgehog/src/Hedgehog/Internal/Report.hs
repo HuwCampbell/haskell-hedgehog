@@ -55,7 +55,7 @@ import           Data.Semigroup (Semigroup(..))
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Discovery (Pos(..), Position(..))
 import qualified Hedgehog.Internal.Discovery as Discovery
-import           Hedgehog.Internal.Property (Classifier(..), Classifications(..))
+import           Hedgehog.Internal.Property (Classifier(..), PropResult(..))
 import           Hedgehog.Internal.Property (PropertyName(..), Log(..), Diff(..))
 import           Hedgehog.Internal.Seed (Seed)
 import           Hedgehog.Internal.Show
@@ -143,7 +143,7 @@ data Report a =
   Report {
       reportTests :: !TestCount
     , reportDiscards :: !DiscardCount
-    , reportClassifications :: !Classifications
+    , reportPropResult :: !PropResult
     , reportStatus :: !a
     } deriving (Show, Functor, Foldable, Traversable)
 
@@ -719,7 +719,8 @@ ppResult name (Report tests discards classes result) =
         ", passed" <+>
         ppTestCount tests <>
         "." <+>
-        ppClassifications classes
+        ppPropResult classes <+>
+        ppCoverage classes
 
     OK ->
       pure . icon SuccessIcon '✓' . WL.annotate SuccessHeader $
@@ -727,23 +728,42 @@ ppResult name (Report tests discards classes result) =
         "passed" <+>
         ppTestCount tests <>
         "." <+>
-        ppClassifications classes
+        ppPropResult classes <+>
+        ppCoverage classes
 
-ppClassifications :: Classifications -> Doc Markup
-ppClassifications (Classifications cls)
+ppPropResult :: PropResult -> Doc Markup
+ppPropResult (PropResult cls total)
   | HM.null cls = mempty
-  | otherwise = (<+>) WL.linebreak $ WL.indent 2 . WL.align . WL.vsep $
-    (\(k, v) -> WL.text $ show (percentage v) <> "% " <> k) <$> HM.toList cls
+  | otherwise = (<>) WL.linebreak $ WL.indent 4 . WL.align . WL.vsep $
+    (\(k, v) -> WL.text $ show (occurrenceRate v total) <> "% " <> k) <$> HM.toList cls
+
+occurrenceRate :: Classifier -> Integer -> Double
+occurrenceRate (Classifier _ occurrences) total =
+  let
+    percentage' :: Double
+    percentage' = fromIntegral occurrences / fromIntegral total * 100
+    thousandths :: Integer
+    thousandths = round $ percentage' * 10
+  in fromIntegral thousandths / 10
+
+ppCoverage :: PropResult -> Doc Markup
+ppCoverage (PropResult cls total)
+  | null coverageLines = mempty
+  | otherwise =
+    WL.linebreak <>
+    WL.linebreak <>
+    WL.text "⚠" <>
+    (WL.indent 3 . WL.align . WL.vsep) coverageLines
   where
-    percentage :: Classifier -> Double
-    percentage (Classifier _ occurrences) =
+    coverageLines = foldMap (uncurry renderCoverage) $ HM.toList cls
+    renderCoverage name cl@(Classifier minRate _) =
       let
-        percentage' :: Double
-        percentage' = fromIntegral occurrences / totalClassifiers * 100
-        thousandths :: Integer
-        thousandths = round $ percentage' * 10
-      in fromIntegral thousandths / 10
-    totalClassifiers = foldr (+) 0.0 (fromIntegral . clsOccurrences <$> cls)
+        rate = occurrenceRate cl total
+      in if rate < minRate
+            then pure . WL.text $
+              "Only " <> show rate <> "% " <> name <>
+              ", but expected " <> show minRate <> "%"
+            else []
 
 ppWhenNonZero :: Doc a -> PropertyCount -> Maybe (Doc a)
 ppWhenNonZero suffix n =

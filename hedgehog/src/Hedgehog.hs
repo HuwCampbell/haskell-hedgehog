@@ -57,6 +57,7 @@ module Hedgehog (
   , forAll
   , forAllWith
   , classify
+  , cover
   , discard
 
   , check
@@ -150,7 +151,7 @@ import           Hedgehog.Internal.HTraversable (HTraversable(..))
 import           Hedgehog.Internal.Opaque (Opaque(..))
 import           Hedgehog.Internal.Property (annotate, annotateShow)
 import           Hedgehog.Internal.Property (assert, (===), (/==))
-import           Hedgehog.Internal.Property (classify)
+import           Hedgehog.Internal.Property (classify, cover)
 import           Hedgehog.Internal.Property (discard, failure, success)
 import           Hedgehog.Internal.Property (DiscardLimit, withDiscards)
 import           Hedgehog.Internal.Property (eval, evalM, evalIO)

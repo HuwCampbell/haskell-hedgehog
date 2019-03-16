@@ -1,5 +1,6 @@
 {-# OPTIONS_HADDOCK not-home #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -22,7 +23,7 @@ module Hedgehog.Internal.Property (
   , PropertyConfig(..)
   , TestLimit(..)
   , Classifier(..)
-  , Classifications(..)
+  , PropResult(..)
   , DiscardLimit(..)
   , ShrinkLimit(..)
   , ShrinkRetries(..)
@@ -83,7 +84,7 @@ module Hedgehog.Internal.Property (
   ) where
 
 import           Control.Applicative (Alternative(..))
-import           Control.Monad (MonadPlus(..))
+import           Control.Monad (MonadPlus(..), when)
 import           Control.Monad.Base (MonadBase(..))
 import           Control.Monad.Catch (MonadThrow(..), MonadCatch(..))
 import           Control.Monad.Catch (SomeException(..), displayException)
@@ -168,11 +169,10 @@ type ClassifierName = String
 -- | A classifier can be attached to a property conditionally
 --
 --   When the amount of occurrences don't exceed the minimum percentage, a
---   warning will be issued. This warning can be turned into an error by using
---   FIXME
+--   warning will be issued.
 data Classifier = Classifier
-  { clsMinPercentage :: Double
-  , clsOccurrences :: Integer
+  { clsMinPercentage :: !Double
+  , clsOccurrences :: !Integer
   }
   deriving Show
 
@@ -183,25 +183,24 @@ instance Semigroup Classifier where
   (Classifier _ occ1) <> (Classifier percentage occ2) =
     Classifier percentage (occ1 + occ2)
 
--- | Classifications are a count of how many times a property has ocurred
+-- | PropResult are a count of how many times a property has ocurred
 --   during a test run
 --
-newtype Classifications = Classifications (HashMap ClassifierName Classifier)
+data PropResult = PropResult
+  { propClassifiers :: !(HashMap ClassifierName Classifier)
+  , propTests :: !Integer
+  }
   deriving Show
 
-instance Semigroup Classifications where
-  (Classifications c1) <> (Classifications c2) = Classifications $
-    HM.foldrWithKey (HM.insertWith (<>)) c1 c2
+instance Semigroup PropResult where
+  (PropResult c1 t1) <> (PropResult c2 t2) =
+    PropResult
+      (HM.foldrWithKey (HM.insertWith (<>)) c1 c2)
+      (t1 + t2)
 
-instance Monoid Classifications where
+instance Monoid PropResult where
   mappend = (<>)
-  mempty = Classifications mempty
-
--- | Create the Classifications object with a single entry
---
-mkClassifications :: Double -> ClassifierName -> Classifications
-mkClassifications min name =
-  Classifications $ HM.singleton name (Classifier min 1)
+  mempty = PropResult mempty 1
 
 -- | A test monad allows the assertion of expectations.
 --
@@ -212,7 +211,7 @@ type Test =
 --
 newtype TestT m a =
   TestT {
-      unTest :: ExceptT Failure (Lazy.WriterT (Classifications, [Log]) m) a
+      unTest :: ExceptT Failure (Lazy.WriterT (PropResult, [Log]) m) a
     } deriving (
       Functor
     , Applicative
@@ -381,8 +380,8 @@ instance MFunctor TestT where
 
 instance Distributive TestT where
   type Transformer t TestT m = (
-      Transformer t (Lazy.WriterT (Classifications, [Log])) m
-    , Transformer t (ExceptT Failure) (Lazy.WriterT (Classifications, [Log]) m)
+      Transformer t (Lazy.WriterT (PropResult, [Log])) m
+    , Transformer t (ExceptT Failure) (Lazy.WriterT (PropResult, [Log]) m)
     )
 
   distribute =
@@ -413,7 +412,7 @@ instance MonadResource m => MonadResource (TestT m) where
 
 instance MonadTransControl TestT where
   type StT TestT a =
-    (Either Failure a, (Classifications, [Log]))
+    (Either Failure a, (PropResult, [Log]))
 
   liftWith f =
     mkTestT . fmap (, (mempty, [])) . fmap Right $ f $ runTestT
@@ -486,19 +485,19 @@ instance MonadTest m => MonadTest (ResourceT m) where
   liftTest =
     lift . liftTest
 
-mkTestT :: m (Either Failure a, (Classifications, [Log])) -> TestT m a
+mkTestT :: m (Either Failure a, (PropResult, [Log])) -> TestT m a
 mkTestT =
   TestT . ExceptT . Lazy.WriterT
 
-mkTest :: (Either Failure a, (Classifications, [Log])) -> Test a
+mkTest :: (Either Failure a, (PropResult, [Log])) -> Test a
 mkTest =
   mkTestT . Identity
 
-runTestT :: TestT m a -> m (Either Failure a, (Classifications, [Log]))
+runTestT :: TestT m a -> m (Either Failure a, (PropResult, [Log]))
 runTestT =
   Lazy.runWriterT . runExceptT . unTest
 
-runTest :: Test a -> (Either Failure a, (Classifications, [Log]))
+runTest :: Test a -> (Either Failure a, (PropResult, [Log]))
 runTest =
   runIdentity . runTestT
 
@@ -837,7 +836,7 @@ withRetries n =
 --      xs <- forAll $ Gen.list (Range.linear 0 100) Gen.alpha
 --      for_ xs $ \x ->
 --        classify (x == 0) "newborns" $ do
---        classify (x > 0 && x < 13) "children" $ do
+--        classify (x > 0 && x < 13) "children" $
 --        classify (x > 12 && x < 20) "teens" $
 --          success
 -- @
@@ -845,19 +844,21 @@ classify :: Bool -> String -> PropertyT IO () -> PropertyT IO ()
 classify = cover 0
 
 cover :: Double -> Bool -> String -> PropertyT IO () -> PropertyT IO ()
-cover _ False _ p = p
-cover min True s p = PropertyT
-                   . TestT
-                   . mapExceptT (Lazy.mapWriterT addClassification)
-                   . unTest . unPropertyT $ p
+cover _ False _ = id
+cover min True s = PropertyT
+                 . TestT
+                 . mapExceptT (Lazy.mapWriterT addClassification)
+                 . unTest . unPropertyT
   where
     addClassification m = do
-      (r, (Classifications cls, xs)) <- m
-      if HM.member s cls
-        then dupeClassification
-        else pure (r, (mkClassifications min s, xs))
-    dupeClassification = throwError . userError $
-      "classification matched duplicate label: \"" <> s <> "\""
+      (r, (PropResult cls tot, xs)) <- m
+#if __GLASGOW_HASKELL__ != 802
+-- FIXME, GHC 8.2.1 has a bug with referencing `cls` below, thus we need to
+-- remove these lines if we're using the 802 series
+      when (HM.member s cls) $ throwError . userError $
+        "classification matched duplicate label: \"" <> s <> "\""
+#endif
+      pure (r, (PropResult (HM.insert s (Classifier min 1) cls) tot, xs))
 
 -- | Creates a property with the default configuration.
 --

@@ -32,7 +32,7 @@ import           Data.Semigroup ((<>))
 
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Gen (runGenT, runDiscardEffect)
-import           Hedgehog.Internal.Property (Classifications)
+import           Hedgehog.Internal.Property (PropResult)
 import           Hedgehog.Internal.Property (Group(..), GroupName(..))
 import           Hedgehog.Internal.Property (Property(..), PropertyConfig(..), PropertyName(..))
 import           Hedgehog.Internal.Property (ShrinkLimit, ShrinkRetries, withTests)
@@ -112,7 +112,7 @@ takeSmallest ::
   -> ShrinkLimit
   -> ShrinkRetries
   -> (Progress -> m ())
-  -> Node m (Maybe (Either Failure (), (Classifications, [Log])))
+  -> Node m (Maybe (Either Failure (), (PropResult, [Log])))
   -> m Result
 takeSmallest size seed shrinks slimit retries updateUI = \case
   Node Nothing _ ->
@@ -157,7 +157,7 @@ checkReport cfg size0 seed0 test0 updateUI =
     test =
       catchAll test0 (fail . show)
 
-    loop :: TestCount -> DiscardCount -> Size -> Seed -> Classifications -> m (Report Result)
+    loop :: TestCount -> DiscardCount -> Size -> Seed -> PropResult -> m (Report Result)
     loop !tests !discards !size !seed classes = do
       updateUI $ Report tests discards classes Running
 
