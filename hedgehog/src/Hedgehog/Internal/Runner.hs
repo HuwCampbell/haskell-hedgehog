@@ -32,6 +32,7 @@ import           Data.Semigroup ((<>))
 
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Gen (runGenT, runDiscardEffect)
+import           Hedgehog.Internal.Property (Classifications)
 import           Hedgehog.Internal.Property (Group(..), GroupName(..))
 import           Hedgehog.Internal.Property (Property(..), PropertyConfig(..), PropertyName(..))
 import           Hedgehog.Internal.Property (ShrinkLimit, ShrinkRetries, withTests)
@@ -111,17 +112,18 @@ takeSmallest ::
   -> ShrinkLimit
   -> ShrinkRetries
   -> (Progress -> m ())
-  -> Node m (Maybe (Either Failure (), [Log]))
+  -> Node m (Maybe (Either Failure (), (Classifications, [Log])))
   -> m Result
 takeSmallest size seed shrinks slimit retries updateUI = \case
   Node Nothing _ ->
     pure GaveUp
 
-  Node (Just (x, w)) xs ->
+  Node (Just (x, (_, w))) xs ->
     case x of
       Left (Failure loc err mdiff) -> do
         let
           failure =
+            -- TODO: maybe add classifier to failure?
             mkFailure size seed shrinks loc err mdiff (reverse w)
 
         updateUI $ Shrinking failure
@@ -155,35 +157,35 @@ checkReport cfg size0 seed0 test0 updateUI =
     test =
       catchAll test0 (fail . show)
 
-    loop :: TestCount -> DiscardCount -> Size -> Seed -> m (Report Result)
-    loop !tests !discards !size !seed = do
-      updateUI $ Report tests discards Running
+    loop :: TestCount -> DiscardCount -> Size -> Seed -> Classifications -> m (Report Result)
+    loop !tests !discards !size !seed classes = do
+      updateUI $ Report tests discards classes Running
 
       if size > 99 then
         -- size has reached limit, reset to 0
-        loop tests discards 0 seed
+        loop tests discards 0 seed classes
 
       else if tests >= fromIntegral (propertyTestLimit cfg) then
         -- we've hit the test limit, test was successful
-        pure $ Report tests discards OK
+        pure $ Report tests discards classes OK
 
       else if discards >= fromIntegral (propertyDiscardLimit cfg) then
         -- we've hit the discard limit, give up
-        pure $ Report tests discards GaveUp
+        pure $ Report tests discards classes GaveUp
 
-      else
+      else do
         case Seed.split seed of
           (s0, s1) -> do
             node@(Node x _) <-
               runTree . runDiscardEffect $ runGenT size s0 . runTestT $ unPropertyT test
             case x of
               Nothing ->
-                loop tests (discards + 1) (size + 1) s1
+                loop tests (discards + 1) (size + 1) s1 classes
 
-              Just (Left _, _) ->
+              Just (Left _, (cls, _)) ->
                 let
                   mkReport =
-                    Report (tests + 1) discards
+                    Report (tests + 1) discards cls
                 in
                   fmap mkReport $
                     takeSmallest
@@ -195,10 +197,10 @@ checkReport cfg size0 seed0 test0 updateUI =
                       (updateUI . mkReport)
                       node
 
-              Just (Right (), _) ->
-                loop (tests + 1) discards (size + 1) s1
+              Just (Right (), (cls, _)) -> do
+                loop (tests + 1) discards (size + 1) s1 cls
   in
-    loop 0 0 size0 seed0
+    loop 0 0 size0 seed0 mempty
 
 checkRegion ::
      MonadIO m

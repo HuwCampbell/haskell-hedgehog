@@ -8,6 +8,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 module Hedgehog.Internal.Report (
   -- * Report
     Summary(..)
@@ -46,6 +47,7 @@ import           Data.Bifunctor (bimap, first, second)
 import qualified Data.Char as Char
 import           Data.Either (partitionEithers)
 import qualified Data.List as List
+import qualified Data.HashMap.Strict as HM
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe (mapMaybe, catMaybes)
@@ -54,6 +56,7 @@ import           Data.Semigroup (Semigroup(..))
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Discovery (Pos(..), Position(..))
 import qualified Hedgehog.Internal.Discovery as Discovery
+import           Hedgehog.Internal.Property (Classifications(..))
 import           Hedgehog.Internal.Property (PropertyName(..), Log(..), Diff(..))
 import           Hedgehog.Internal.Seed (Seed)
 import           Hedgehog.Internal.Show
@@ -141,6 +144,7 @@ data Report a =
   Report {
       reportTests :: !TestCount
     , reportDiscards :: !DiscardCount
+    , reportClassifications :: !Classifications
     , reportStatus :: !a
     } deriving (Show, Functor, Foldable, Traversable)
 
@@ -673,7 +677,7 @@ ppName = \case
     WL.text name
 
 ppProgress :: MonadIO m => Maybe PropertyName -> Report Progress -> m (Doc Markup)
-ppProgress name (Report tests discards status) =
+ppProgress name (Report tests discards _ status) =
   case status of
     Running ->
       pure . icon RunningIcon '●' . WL.annotate RunningHeader $
@@ -692,7 +696,7 @@ ppProgress name (Report tests discards status) =
         "(shrinking)"
 
 ppResult :: MonadIO m => Maybe PropertyName -> Report Result -> m (Doc Markup)
-ppResult name (Report tests discards result) =
+ppResult name (Report tests discards classes result) =
   case result of
     Failed failure -> do
       pfailure <- ppFailureReport name failure
@@ -715,14 +719,30 @@ ppResult name (Report tests discards result) =
         ppDiscardCount discards <>
         ", passed" <+>
         ppTestCount tests <>
-        "."
+        "." <+>
+        ppClassifications classes
 
     OK ->
       pure . icon SuccessIcon '✓' . WL.annotate SuccessHeader $
         ppName name <+>
         "passed" <+>
         ppTestCount tests <>
-        "."
+        "." <+>
+        ppClassifications classes
+
+ppClassifications :: Classifications -> Doc Markup
+ppClassifications (Classifications cls)
+  | HM.null cls = mempty
+  | otherwise = (<+>) WL.linebreak $ WL.indent 2 . WL.align . WL.vsep $
+    (\(k, v) -> WL.text $ show (percentage v) <> "% " <> k) <$> HM.toList cls
+  where
+    percentage :: Integer -> Double
+    percentage v =
+      let
+        percentage' = fromIntegral v / totalClassifiers * 100
+        thousandths = round @Double @Integer $ percentage' * 10
+      in fromIntegral thousandths / 10
+    totalClassifiers = foldr (+) 0.0 (fromIntegral <$> cls)
 
 ppWhenNonZero :: Doc a -> PropertyCount -> Maybe (Doc a)
 ppWhenNonZero suffix n =

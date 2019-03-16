@@ -21,6 +21,7 @@ module Hedgehog.Internal.Property (
   , PropertyName(..)
   , PropertyConfig(..)
   , TestLimit(..)
+  , Classifications(..)
   , DiscardLimit(..)
   , ShrinkLimit(..)
   , ShrinkRetries(..)
@@ -34,6 +35,7 @@ module Hedgehog.Internal.Property (
   , forAllT
   , forAllWith
   , forAllWithT
+  , classify
   , discard
 
   -- * Group
@@ -93,7 +95,7 @@ import           Control.Monad.Trans.Class (MonadTrans(..))
 import           Control.Monad.Trans.Cont (ContT)
 import           Control.Monad.Trans.Control (ComposeSt, defaultLiftBaseWith, defaultRestoreM)
 import           Control.Monad.Trans.Control (MonadBaseControl(..), MonadTransControl(..))
-import           Control.Monad.Trans.Except (ExceptT(..), runExceptT)
+import           Control.Monad.Trans.Except (ExceptT(..), runExceptT, mapExceptT)
 import           Control.Monad.Trans.Identity (IdentityT)
 import           Control.Monad.Trans.Maybe (MaybeT)
 import qualified Control.Monad.Trans.RWS.Lazy as Lazy
@@ -108,6 +110,8 @@ import qualified Control.Monad.Trans.Writer.Strict as Strict
 
 import qualified Data.Char as Char
 import           Data.Functor.Identity (Identity(..))
+import           Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
 import qualified Data.List as List
 import           Data.Semigroup (Semigroup)
 import           Data.String (IsString)
@@ -121,6 +125,8 @@ import           Hedgehog.Internal.Show
 import           Hedgehog.Internal.Source
 
 import           Language.Haskell.TH.Lift (deriveLift)
+
+import           System.IO.Error (userError)
 
 ------------------------------------------------------------------------
 
@@ -152,6 +158,28 @@ newtype PropertyT m a =
     , MonadError e
     )
 
+-- | Classifiers use strings as labels
+--
+type ClassifierName = String
+
+-- | Classifications are a count of how many times a property has ocurred
+--   during a test run
+--
+newtype Classifications = Classifications (HashMap ClassifierName Integer)
+  deriving Show
+
+instance Semigroup Classifications where
+  (Classifications c1) <> (Classifications c2) = Classifications $
+    HM.foldrWithKey (HM.insertWith (+)) c1 c2
+
+instance Monoid Classifications where
+  mempty = Classifications mempty
+
+-- | Create the Classifications object with a single entry
+--
+mkClassifications :: ClassifierName -> Classifications
+mkClassifications = Classifications . flip HM.singleton 1
+
 -- | A test monad allows the assertion of expectations.
 --
 type Test =
@@ -161,7 +189,7 @@ type Test =
 --
 newtype TestT m a =
   TestT {
-      unTest :: ExceptT Failure (Lazy.WriterT [Log] m) a
+      unTest :: ExceptT Failure (Lazy.WriterT (Classifications, [Log]) m) a
     } deriving (
       Functor
     , Applicative
@@ -330,8 +358,8 @@ instance MFunctor TestT where
 
 instance Distributive TestT where
   type Transformer t TestT m = (
-      Transformer t (Lazy.WriterT [Log]) m
-    , Transformer t (ExceptT Failure) (Lazy.WriterT [Log] m)
+      Transformer t (Lazy.WriterT (Classifications, [Log])) m
+    , Transformer t (ExceptT Failure) (Lazy.WriterT (Classifications, [Log]) m)
     )
 
   distribute =
@@ -362,10 +390,10 @@ instance MonadResource m => MonadResource (TestT m) where
 
 instance MonadTransControl TestT where
   type StT TestT a =
-    (Either Failure a, [Log])
+    (Either Failure a, (Classifications, [Log]))
 
   liftWith f =
-    mkTestT . fmap (, []) . fmap Right $ f $ runTestT
+    mkTestT . fmap (, (mempty, [])) . fmap Right $ f $ runTestT
 
   restoreT =
     mkTestT
@@ -435,19 +463,19 @@ instance MonadTest m => MonadTest (ResourceT m) where
   liftTest =
     lift . liftTest
 
-mkTestT :: m (Either Failure a, [Log]) -> TestT m a
+mkTestT :: m (Either Failure a, (Classifications, [Log])) -> TestT m a
 mkTestT =
   TestT . ExceptT . Lazy.WriterT
 
-mkTest :: (Either Failure a, [Log]) -> Test a
+mkTest :: (Either Failure a, (Classifications, [Log])) -> Test a
 mkTest =
   mkTestT . Identity
 
-runTestT :: TestT m a -> m (Either Failure a, [Log])
+runTestT :: TestT m a -> m (Either Failure a, (Classifications, [Log]))
 runTestT =
   Lazy.runWriterT . runExceptT . unTest
 
-runTest :: Test a -> (Either Failure a, [Log])
+runTest :: Test a -> (Either Failure a, (Classifications, [Log]))
 runTest =
   runIdentity . runTestT
 
@@ -455,14 +483,14 @@ runTest =
 --
 writeLog :: MonadTest m => Log -> m ()
 writeLog x =
-  liftTest $ mkTest (pure (), [x])
+  liftTest $ mkTest (pure (), (mempty, [x]))
 
 -- | Fail the test with an error message, useful for building other failure
 --   combinators.
 --
 failWith :: (MonadTest m, HasCallStack) => Maybe Diff -> String -> m a
 failWith diff msg =
-  liftTest $ mkTest (Left $ Failure (getCaller callStack) msg diff, [])
+  liftTest $ mkTest (Left $ Failure (getCaller callStack) msg diff, (mempty, []))
 
 -- | Annotates the source code with a message that might be useful for
 --   debugging a test failure.
@@ -777,6 +805,33 @@ withShrinks n =
 withRetries :: ShrinkRetries -> Property -> Property
 withRetries n =
   mapConfig $ \config -> config { propertyShrinkRetries = n }
+
+-- | Add a classifier to the test if the predicate is true
+--
+-- @
+--    prop_with_classifier :: Property
+--    prop_with_classifier = property $ do
+--      xs <- forAll $ Gen.list (Range.linear 0 100) Gen.alpha
+--      for_ xs $ \x ->
+--        classify (x == 0) "newborns" $ do
+--        classify (x > 0 && x < 13) "children" $ do
+--        classify (x > 12 && x < 20) "teens" $
+--          success
+-- @
+classify :: Bool -> String -> PropertyT IO () -> PropertyT IO ()
+classify False _ p = p
+classify True s p = PropertyT
+                  . TestT
+                  . mapExceptT (Lazy.mapWriterT addClassification)
+                  . unTest . unPropertyT $ p
+  where
+    addClassification m = do
+      (r, (Classifications cls, xs)) <- m
+      if HM.null cls
+        then pure (r, (mkClassifications s, xs))
+        else dupeClassification
+    dupeClassification = throwError . userError $
+      "classify matched multiple predicates, second match: \"" <> s <> "\""
 
 -- | Creates a property with the default configuration.
 --
