@@ -55,7 +55,7 @@ import           Data.Semigroup (Semigroup(..))
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Discovery (Pos(..), Position(..))
 import qualified Hedgehog.Internal.Discovery as Discovery
-import           Hedgehog.Internal.Property (Classifications(..))
+import           Hedgehog.Internal.Property (Classifier(..), Classifications(..))
 import           Hedgehog.Internal.Property (PropertyName(..), Log(..), Diff(..))
 import           Hedgehog.Internal.Seed (Seed)
 import           Hedgehog.Internal.Show
@@ -735,15 +735,15 @@ ppClassifications (Classifications cls)
   | otherwise = (<+>) WL.linebreak $ WL.indent 2 . WL.align . WL.vsep $
     (\(k, v) -> WL.text $ show (percentage v) <> "% " <> k) <$> HM.toList cls
   where
-    percentage :: Integer -> Double
-    percentage v =
+    percentage :: Classifier -> Double
+    percentage (Classifier _ occurrences) =
       let
         percentage' :: Double
-        percentage' = fromIntegral v / totalClassifiers * 100
+        percentage' = fromIntegral occurrences / totalClassifiers * 100
         thousandths :: Integer
         thousandths = round $ percentage' * 10
       in fromIntegral thousandths / 10
-    totalClassifiers = foldr (+) 0.0 (fromIntegral <$> cls)
+    totalClassifiers = foldr (+) 0.0 (fromIntegral . clsOccurrences <$> cls)
 
 ppWhenNonZero :: Doc a -> PropertyCount -> Maybe (Doc a)
 ppWhenNonZero suffix n =

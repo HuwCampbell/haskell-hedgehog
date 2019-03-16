@@ -21,6 +21,7 @@ module Hedgehog.Internal.Property (
   , PropertyName(..)
   , PropertyConfig(..)
   , TestLimit(..)
+  , Classifier(..)
   , Classifications(..)
   , DiscardLimit(..)
   , ShrinkLimit(..)
@@ -36,6 +37,7 @@ module Hedgehog.Internal.Property (
   , forAllWith
   , forAllWithT
   , classify
+  , cover
   , discard
 
   -- * Group
@@ -126,6 +128,7 @@ import           Hedgehog.Internal.Source
 
 import           Language.Haskell.TH.Lift (deriveLift)
 
+import           Prelude hiding (min)
 import           System.IO.Error (userError)
 
 ------------------------------------------------------------------------
@@ -162,15 +165,33 @@ newtype PropertyT m a =
 --
 type ClassifierName = String
 
+-- | A classifier can be attached to a property conditionally
+--
+--   When the amount of occurrences don't exceed the minimum percentage, a
+--   warning will be issued. This warning can be turned into an error by using
+--   FIXME
+data Classifier = Classifier
+  { clsMinPercentage :: Double
+  , clsOccurrences :: Integer
+  }
+  deriving Show
+
+-- | This semigroup is right biased, the percentage from the rightmost
+--   `Classifier` will be kept. This shouldn't be a problem since the library
+--   doesn't allow setting multiple classifiers with the same label.
+instance Semigroup Classifier where
+  (Classifier _ occ1) <> (Classifier percentage occ2) =
+    Classifier percentage (occ1 + occ2)
+
 -- | Classifications are a count of how many times a property has ocurred
 --   during a test run
 --
-newtype Classifications = Classifications (HashMap ClassifierName Integer)
+newtype Classifications = Classifications (HashMap ClassifierName Classifier)
   deriving Show
 
 instance Semigroup Classifications where
   (Classifications c1) <> (Classifications c2) = Classifications $
-    HM.foldrWithKey (HM.insertWith (+)) c1 c2
+    HM.foldrWithKey (HM.insertWith (<>)) c1 c2
 
 instance Monoid Classifications where
   mappend = (<>)
@@ -178,8 +199,9 @@ instance Monoid Classifications where
 
 -- | Create the Classifications object with a single entry
 --
-mkClassifications :: ClassifierName -> Classifications
-mkClassifications = Classifications . flip HM.singleton 1
+mkClassifications :: Double -> ClassifierName -> Classifications
+mkClassifications min name =
+  Classifications $ HM.singleton name (Classifier min 1)
 
 -- | A test monad allows the assertion of expectations.
 --
@@ -820,19 +842,22 @@ withRetries n =
 --          success
 -- @
 classify :: Bool -> String -> PropertyT IO () -> PropertyT IO ()
-classify False _ p = p
-classify True s p = PropertyT
-                  . TestT
-                  . mapExceptT (Lazy.mapWriterT addClassification)
-                  . unTest . unPropertyT $ p
+classify = cover 0
+
+cover :: Double -> Bool -> String -> PropertyT IO () -> PropertyT IO ()
+cover _ False _ p = p
+cover min True s p = PropertyT
+                   . TestT
+                   . mapExceptT (Lazy.mapWriterT addClassification)
+                   . unTest . unPropertyT $ p
   where
     addClassification m = do
       (r, (Classifications cls, xs)) <- m
-      if HM.null cls
-        then pure (r, (mkClassifications s, xs))
-        else dupeClassification
+      if HM.member s cls
+        then dupeClassification
+        else pure (r, (mkClassifications min s, xs))
     dupeClassification = throwError . userError $
-      "classify matched multiple predicates, second match: \"" <> s <> "\""
+      "classification matched duplicate label: \"" <> s <> "\""
 
 -- | Creates a property with the default configuration.
 --
