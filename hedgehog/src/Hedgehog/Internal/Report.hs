@@ -741,7 +741,7 @@ occurrenceRate :: Classifier -> Integer -> Double
 occurrenceRate (Classifier _ occurrences) total =
   let
     percentage' :: Double
-    percentage' = fromIntegral occurrences / fromIntegral total * 100
+    percentage' = fromIntegral occurrences / fromIntegral (total - 2) * 100
     thousandths :: Integer
     thousandths = round $ percentage' * 10
   in fromIntegral thousandths / 10
