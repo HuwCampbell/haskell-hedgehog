@@ -46,7 +46,6 @@ import           Data.Bifunctor (bimap, first, second)
 import qualified Data.Char as Char
 import           Data.Either (partitionEithers)
 import qualified Data.List as List
-import qualified Data.HashMap.Strict as HM
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe (mapMaybe, catMaybes)
@@ -55,7 +54,7 @@ import           Data.Semigroup (Semigroup(..))
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Discovery (Pos(..), Position(..))
 import qualified Hedgehog.Internal.Discovery as Discovery
-import           Hedgehog.Internal.Property (Classifier(..), PropResult(..))
+import           Hedgehog.Internal.Property (Classifier(..), Classification(..))
 import           Hedgehog.Internal.Property (PropertyName(..), Log(..), Diff(..))
 import           Hedgehog.Internal.Seed (Seed)
 import           Hedgehog.Internal.Show
@@ -143,7 +142,7 @@ data Report a =
   Report {
       reportTests :: !TestCount
     , reportDiscards :: !DiscardCount
-    , reportPropResult :: !PropResult
+    , reportClassification :: !Classification
     , reportStatus :: !a
     } deriving (Show, Functor, Foldable, Traversable)
 
@@ -719,7 +718,7 @@ ppResult name (Report tests discards classes result) =
         ", passed" <+>
         ppTestCount tests <>
         "." <+>
-        ppPropResult classes <+>
+        ppClassification classes <+>
         ppCoverage classes
 
     OK ->
@@ -728,14 +727,14 @@ ppResult name (Report tests discards classes result) =
         "passed" <+>
         ppTestCount tests <>
         "." <+>
-        ppPropResult classes <+>
+        ppClassification classes <+>
         ppCoverage classes
 
-ppPropResult :: PropResult -> Doc Markup
-ppPropResult (PropResult cls total)
-  | HM.null cls = mempty
+ppClassification :: Classification -> Doc Markup
+ppClassification (Classification cls total)
+  | Map.null cls = mempty
   | otherwise = (<>) WL.linebreak $ WL.indent 4 . WL.align . WL.vsep $
-    (\(k, v) -> WL.text $ show (occurrenceRate v total) <> "% " <> k) <$> HM.toList cls
+    (\(k, v) -> WL.text $ show (occurrenceRate v total) <> "% " <> k) <$> Map.toList cls
 
 occurrenceRate :: Classifier -> Integer -> Double
 occurrenceRate (Classifier _ occurrences) total =
@@ -746,8 +745,8 @@ occurrenceRate (Classifier _ occurrences) total =
     thousandths = round $ percentage' * 10
   in fromIntegral thousandths / 10
 
-ppCoverage :: PropResult -> Doc Markup
-ppCoverage (PropResult cls total)
+ppCoverage :: Classification -> Doc Markup
+ppCoverage (Classification cls total)
   | null coverageLines = mempty
   | otherwise =
     WL.linebreak <>
@@ -755,7 +754,7 @@ ppCoverage (PropResult cls total)
     WL.text "⚠" <>
     (WL.indent 3 . WL.align . WL.vsep) coverageLines
   where
-    coverageLines = foldMap (uncurry renderCoverage) $ HM.toList cls
+    coverageLines = foldMap (uncurry renderCoverage) $ Map.toList cls
     renderCoverage name cl@(Classifier minRate _) =
       let
         rate = occurrenceRate cl total

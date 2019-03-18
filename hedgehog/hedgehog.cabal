@@ -75,7 +75,6 @@ library
     , time                            >= 1.4        && < 1.10
     , transformers                    >= 0.4        && < 0.6
     , transformers-base               >= 0.4        && < 0.5
-    , unordered-containers            >= 0.2        && < 0.3
     , wl-pprint-annotated             >= 0.0        && < 0.2
 
   ghc-options:

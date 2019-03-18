@@ -23,7 +23,7 @@ module Hedgehog.Internal.Property (
   , PropertyConfig(..)
   , TestLimit(..)
   , Classifier(..)
-  , PropResult(..)
+  , Classification(..)
   , DiscardLimit(..)
   , ShrinkLimit(..)
   , ShrinkRetries(..)
@@ -113,8 +113,8 @@ import qualified Control.Monad.Trans.Writer.Strict as Strict
 
 import qualified Data.Char as Char
 import           Data.Functor.Identity (Identity(..))
-import           Data.HashMap.Strict (HashMap)
-import qualified Data.HashMap.Strict as HM
+import           Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.List as List
 import           Data.Semigroup (Semigroup(..))
 import           Data.String (IsString)
@@ -129,7 +129,6 @@ import           Hedgehog.Internal.Source
 
 import           Language.Haskell.TH.Lift (deriveLift)
 
-import           Prelude hiding (min)
 import           System.IO.Error (userError)
 
 ------------------------------------------------------------------------
@@ -183,24 +182,28 @@ instance Semigroup Classifier where
   (Classifier _ occ1) <> (Classifier percentage occ2) =
     Classifier percentage (occ1 + occ2)
 
--- | PropResult are a count of how many times a property has ocurred
+-- | Classification are a count of how many times a property has ocurred
 --   during a test run
 --
-data PropResult = PropResult
-  { propClassifiers :: !(HashMap ClassifierName Classifier)
+data Classification = Classification
+  { propClassifiers :: !(Map ClassifierName Classifier)
   , propTests :: !Integer
   }
   deriving Show
 
-instance Semigroup PropResult where
-  (PropResult c1 t1) <> (PropResult c2 t2) =
-    PropResult
-      (HM.foldrWithKey (HM.insertWith (<>)) c1 c2)
+instance Semigroup Classification where
+  (Classification c1 t1) <> (Classification c2 t2) =
+    Classification
+      (Map.foldrWithKey (Map.insertWith (<>)) c1 c2)
       (t1 + t2)
 
-instance Monoid PropResult where
+instance Monoid Classification where
   mappend = (<>)
-  mempty = PropResult mempty 1
+  mempty = Classification mempty 1
+
+insertClassifier :: String -> Double -> Classification -> Classification
+insertClassifier s minCoverage (Classification cls tot) =
+  Classification (Map.insert s (Classifier minCoverage 1) cls) tot
 
 -- | A test monad allows the assertion of expectations.
 --
@@ -211,7 +214,7 @@ type Test =
 --
 newtype TestT m a =
   TestT {
-      unTest :: ExceptT Failure (Lazy.WriterT (PropResult, [Log]) m) a
+      unTest :: ExceptT Failure (Lazy.WriterT (Classification, [Log]) m) a
     } deriving (
       Functor
     , Applicative
@@ -380,8 +383,8 @@ instance MFunctor TestT where
 
 instance Distributive TestT where
   type Transformer t TestT m = (
-      Transformer t (Lazy.WriterT (PropResult, [Log])) m
-    , Transformer t (ExceptT Failure) (Lazy.WriterT (PropResult, [Log]) m)
+      Transformer t (Lazy.WriterT (Classification, [Log])) m
+    , Transformer t (ExceptT Failure) (Lazy.WriterT (Classification, [Log]) m)
     )
 
   distribute =
@@ -412,7 +415,7 @@ instance MonadResource m => MonadResource (TestT m) where
 
 instance MonadTransControl TestT where
   type StT TestT a =
-    (Either Failure a, (PropResult, [Log]))
+    (Either Failure a, (Classification, [Log]))
 
   liftWith f =
     mkTestT . fmap (, (mempty, [])) . fmap Right $ f $ runTestT
@@ -485,19 +488,19 @@ instance MonadTest m => MonadTest (ResourceT m) where
   liftTest =
     lift . liftTest
 
-mkTestT :: m (Either Failure a, (PropResult, [Log])) -> TestT m a
+mkTestT :: m (Either Failure a, (Classification, [Log])) -> TestT m a
 mkTestT =
   TestT . ExceptT . Lazy.WriterT
 
-mkTest :: (Either Failure a, (PropResult, [Log])) -> Test a
+mkTest :: (Either Failure a, (Classification, [Log])) -> Test a
 mkTest =
   mkTestT . Identity
 
-runTestT :: TestT m a -> m (Either Failure a, (PropResult, [Log]))
+runTestT :: TestT m a -> m (Either Failure a, (Classification, [Log]))
 runTestT =
   Lazy.runWriterT . runExceptT . unTest
 
-runTest :: Test a -> (Either Failure a, (PropResult, [Log]))
+runTest :: Test a -> (Either Failure a, (Classification, [Log]))
 runTest =
   runIdentity . runTestT
 
@@ -845,20 +848,20 @@ classify = cover 0
 
 cover :: Double -> Bool -> String -> PropertyT IO () -> PropertyT IO ()
 cover _ False _ = id
-cover min True s = PropertyT
+cover minCoverage True s = PropertyT
                  . TestT
                  . mapExceptT (Lazy.mapWriterT addClassification)
                  . unTest . unPropertyT
   where
     addClassification m = do
-      (r, (PropResult cls tot, xs)) <- m
+      (r, (cl@(Classification cls _), xs)) <- m
 #if __GLASGOW_HASKELL__ != 802
--- FIXME, GHC 8.2.1 has a bug with referencing `cls` below, thus we need to
--- remove these lines if we're using the 802 series
-      when (HM.member s cls) $ throwError . userError $
+      -- FIXME GHC 8.2.1 has a bug with referencing `cls` below, thus we need to
+      -- FIXME remove these lines if we're using the 802 series
+      when (Map.member s cls) $ throwError . userError $
         "classification matched duplicate label: \"" <> s <> "\""
 #endif
-      pure (r, (PropResult (HM.insert s (Classifier min 1) cls) tot, xs))
+      pure (r, (insertClassifier s minCoverage cl, xs))
 
 -- | Creates a property with the default configuration.
 --
