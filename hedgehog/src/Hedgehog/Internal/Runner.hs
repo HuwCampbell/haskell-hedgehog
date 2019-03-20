@@ -158,34 +158,34 @@ checkReport cfg size0 seed0 test0 updateUI =
       catchAll test0 (fail . show)
 
     loop :: TestCount -> DiscardCount -> Size -> Seed -> Classification -> m (Report Result)
-    loop !tests !discards !size !seed classes = do
-      updateUI $ Report tests discards classes Running
+    loop !tests !discards !size !seed classification0 = do
+      updateUI $ Report tests discards classification0 Running
 
       if size > 99 then
         -- size has reached limit, reset to 0
-        loop tests discards 0 seed classes
+        loop tests discards 0 seed classification0
 
       else if tests >= fromIntegral (propertyTestLimit cfg) then
         -- we've hit the test limit, test was successful
-        pure $ Report tests discards classes OK
+        pure $ Report tests discards classification0 OK
 
       else if discards >= fromIntegral (propertyDiscardLimit cfg) then
         -- we've hit the discard limit, give up
-        pure $ Report tests discards classes GaveUp
+        pure $ Report tests discards classification0 GaveUp
 
-      else do
+      else
         case Seed.split seed of
           (s0, s1) -> do
             node@(Node x _) <-
               runTree . runDiscardEffect $ runGenT size s0 . runTestT $ unPropertyT test
             case x of
               Nothing ->
-                loop tests (discards + 1) (size + 1) s1 classes
+                loop tests (discards + 1) (size + 1) s1 classification0
 
-              Just (Left _, (cls, _)) ->
+              Just (Left _, (classification, _)) ->
                 let
                   mkReport =
-                    Report (tests + 1) discards cls
+                    Report (tests + 1) discards classification
                 in
                   fmap mkReport $
                     takeSmallest
@@ -197,8 +197,8 @@ checkReport cfg size0 seed0 test0 updateUI =
                       (updateUI . mkReport)
                       node
 
-              Just (Right (), (cls, _)) -> do
-                loop (tests + 1) discards (size + 1) s1 cls
+              Just (Right (), (classification, _)) -> do
+                loop (tests + 1) discards (size + 1) s1 classification
   in
     loop 0 0 size0 seed0 mempty
 

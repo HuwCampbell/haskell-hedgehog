@@ -54,7 +54,8 @@ import           Data.Semigroup (Semigroup(..))
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Discovery (Pos(..), Position(..))
 import qualified Hedgehog.Internal.Discovery as Discovery
-import           Hedgehog.Internal.Property (Classifier(..), Classification(..))
+import           Hedgehog.Internal.Property (Classifier(..), ClassifierName(..))
+import           Hedgehog.Internal.Property (Classification(..))
 import           Hedgehog.Internal.Property (PropertyName(..), Log(..), Diff(..))
 import           Hedgehog.Internal.Seed (Seed)
 import           Hedgehog.Internal.Show
@@ -731,38 +732,44 @@ ppResult name (Report tests discards classes result) =
         ppCoverage classes
 
 ppClassification :: Classification -> Doc Markup
-ppClassification (Classification cls total)
-  | Map.null cls = mempty
-  | otherwise = (<>) WL.linebreak $ WL.indent 4 . WL.align . WL.vsep $
-    (\(k, v) -> WL.text $ show (occurrenceRate v total) <> "% " <> k) <$> Map.toList cls
+ppClassification (Classification classifiers total) =
+  if Map.null classifiers then
+    mempty
+  else
+    (<>) WL.linebreak $ WL.indent 4 . WL.align . WL.vsep $
+      (\(ClassifierName k, v) -> WL.text $ show (occurrenceRate v total) <> "% " <> k) <$> Map.toList classifiers
 
 occurrenceRate :: Classifier -> Integer -> Double
 occurrenceRate (Classifier _ occurrences) total =
   let
-    percentage' :: Double
-    percentage' = fromIntegral occurrences / fromIntegral (total - 2) * 100
+    percentage :: Double
+    percentage =
+      fromIntegral occurrences / fromIntegral (total - 2) * 100
     thousandths :: Integer
-    thousandths = round $ percentage' * 10
-  in fromIntegral thousandths / 10
+    thousandths =
+      round $ percentage * 10
+  in
+    fromIntegral thousandths / 10
 
 ppCoverage :: Classification -> Doc Markup
-ppCoverage (Classification cls total)
-  | null coverageLines = mempty
-  | otherwise =
-    WL.linebreak <>
-    WL.linebreak <>
-    WL.text "⚠" <>
-    (WL.indent 3 . WL.align . WL.vsep) coverageLines
-  where
-    coverageLines = foldMap (uncurry renderCoverage) $ Map.toList cls
-    renderCoverage name cl@(Classifier minRate _) =
-      let
-        rate = occurrenceRate cl total
-      in if rate < minRate
-            then pure . WL.text $
-              "Only " <> show rate <> "% " <> name <>
-              ", but expected " <> show minRate <> "%"
-            else []
+ppCoverage (Classification classifiers total) =
+  let
+    coverageLines = foldMap (uncurry renderCoverage) $ Map.toList classifiers
+    renderCoverage (ClassifierName name) cl@(Classifier minRate _) =
+      if occurrenceRate cl total < minRate then
+        pure . WL.text $
+          "Only " <> show (occurrenceRate cl total) <> "% " <> name <>
+          ", but expected " <> show minRate <> "%"
+      else
+        []
+  in
+    if null coverageLines then
+      mempty
+    else
+      WL.linebreak <>
+      WL.linebreak <>
+      WL.text "⚠" <>
+      (WL.indent 3 . WL.align . WL.vsep) coverageLines
 
 ppWhenNonZero :: Doc a -> PropertyCount -> Maybe (Doc a)
 ppWhenNonZero suffix n =

@@ -23,6 +23,7 @@ module Hedgehog.Internal.Property (
   , PropertyConfig(..)
   , TestLimit(..)
   , Classifier(..)
+  , ClassifierName(..)
   , Classification(..)
   , DiscardLimit(..)
   , ShrinkLimit(..)
@@ -163,17 +164,20 @@ newtype PropertyT m a =
 
 -- | Classifiers use strings as labels
 --
-type ClassifierName = String
+newtype ClassifierName =
+  ClassifierName {
+      unClassifierName :: String
+    } deriving (Show, Eq, Ord)
 
 -- | A classifier can be attached to a property conditionally
 --
 --   When the amount of occurrences don't exceed the minimum percentage, a
 --   warning will be issued.
-data Classifier = Classifier
-  { clsMinPercentage :: !Double
-  , clsOccurrences :: !Integer
-  }
-  deriving Show
+data Classifier =
+  Classifier {
+      classifierPercentage :: !Double
+    , classifierOccurrences :: !Integer
+    } deriving (Show)
 
 -- | This semigroup is right biased, the percentage from the rightmost
 --   `Classifier` will be kept. This shouldn't be a problem since the library
@@ -185,11 +189,11 @@ instance Semigroup Classifier where
 -- | Classification are a count of how many times a property has ocurred
 --   during a test run
 --
-data Classification = Classification
-  { propClassifiers :: !(Map ClassifierName Classifier)
-  , propTests :: !Integer
-  }
-  deriving Show
+data Classification =
+  Classification {
+      classificationClassifiers :: !(Map ClassifierName Classifier)
+    , classificationTests :: !Integer
+    } deriving (Show)
 
 instance Semigroup Classification where
   (Classification c1 t1) <> (Classification c2 t2) =
@@ -198,12 +202,14 @@ instance Semigroup Classification where
       (t1 + t2)
 
 instance Monoid Classification where
-  mappend = (<>)
-  mempty = Classification mempty 1
+  mappend =
+    (<>)
+  mempty =
+    Classification mempty 1
 
-insertClassifier :: String -> Double -> Classification -> Classification
-insertClassifier s minCoverage (Classification cls tot) =
-  Classification (Map.insert s (Classifier minCoverage 1) cls) tot
+insertClassifier :: ClassifierName -> Double -> Classification -> Classification
+insertClassifier c percentage (Classification classifiers tot) =
+  Classification (Map.insert c (Classifier percentage 1) classifiers) tot
 
 -- | A test monad allows the assertion of expectations.
 --
@@ -847,21 +853,32 @@ classify :: Bool -> String -> PropertyT IO () -> PropertyT IO ()
 classify = cover 0
 
 cover :: Double -> Bool -> String -> PropertyT IO () -> PropertyT IO ()
-cover _ False _ = id
-cover minCoverage True s = PropertyT
-                 . TestT
-                 . mapExceptT (Lazy.mapWriterT addClassification)
-                 . unTest . unPropertyT
-  where
-    addClassification m = do
-      (r, (cl@(Classification cls _), xs)) <- m
+cover minCoverage condition s =
+  if condition then
+    let
+      addClassification m = do
+        (r, (cl@(Classification classifiers _), xs)) <- m
+        let classifierName = ClassifierName s
 #if __GLASGOW_HASKELL__ != 802
-      -- FIXME GHC 8.2.1 has a bug with referencing `cls` below, thus we need to
-      -- FIXME remove these lines if we're using the 802 series
-      when (Map.member s cls) $ throwError . userError $
-        "classification matched duplicate label: \"" <> s <> "\""
+        -- FIXME GHC 8.2.1 has a bug with referencing `classifiers` below, thus we need to
+        -- FIXME remove these lines if we're using the 802 series. GHC generates
+        -- FIXME this error:
+        -- FIXME
+        -- FIXME ghc: panic! (the 'impossible' happened)
+        -- FIXME   (GHC version 8.2.1 for x86_64-unknown-linux):
+        -- FIXME         getUnboxedSumName
+        when (Map.member classifierName classifiers) $ throwError . userError $
+          "classification matched duplicate label: \"" <> s <> "\""
 #endif
-      pure (r, (insertClassifier s minCoverage cl, xs))
+        pure (r, (insertClassifier classifierName minCoverage cl, xs))
+    in
+      PropertyT
+        . TestT
+        . mapExceptT (Lazy.mapWriterT addClassification)
+        . unTest
+        . unPropertyT
+  else
+    id
 
 -- | Creates a property with the default configuration.
 --
