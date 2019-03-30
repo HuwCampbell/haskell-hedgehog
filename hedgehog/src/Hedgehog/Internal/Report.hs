@@ -719,8 +719,8 @@ ppResult name (Report tests discards classes result) =
         ", passed" <+>
         ppTestCount tests <>
         "." <+>
-        ppClassification classes <+>
-        ppCoverage classes
+        ppClassification classes tests <+>
+        ppCoverage classes tests
 
     OK ->
       pure . icon SuccessIcon '✓' . WL.annotate SuccessHeader $
@@ -728,31 +728,31 @@ ppResult name (Report tests discards classes result) =
         "passed" <+>
         ppTestCount tests <>
         "." <+>
-        ppClassification classes <+>
-        ppCoverage classes
+        ppClassification classes tests <+>
+        ppCoverage classes tests
 
-ppClassification :: Classification -> Doc Markup
-ppClassification (Classification classifiers total) =
+ppClassification :: Classification -> TestCount -> Doc Markup
+ppClassification (Classification classifiers) total =
   if Map.null classifiers then
     mempty
   else
     (<>) WL.linebreak $ WL.indent 4 . WL.align . WL.vsep $
       (\(ClassifierName k, v) -> WL.text $ show (occurrenceRate v total) <> "% " <> k) <$> Map.toList classifiers
 
-occurrenceRate :: Classifier -> Integer -> Double
-occurrenceRate (Classifier _ occurrences) total =
+occurrenceRate :: Classifier -> TestCount -> Double
+occurrenceRate (Classifier _ occurrences) (TestCount total) =
   let
     percentage :: Double
     percentage =
-      fromIntegral occurrences / fromIntegral (total - 2) * 100
+      fromIntegral occurrences / fromIntegral total * 100
     thousandths :: Integer
     thousandths =
       round $ percentage * 10
   in
     fromIntegral thousandths / 10
 
-ppCoverage :: Classification -> Doc Markup
-ppCoverage (Classification classifiers total) =
+ppCoverage :: Classification -> TestCount -> Doc Markup
+ppCoverage (Classification classifiers) total =
   let
     coverageLines = foldMap (uncurry renderCoverage) $ Map.toList classifiers
     renderCoverage (ClassifierName name) cl@(Classifier minRate _) =

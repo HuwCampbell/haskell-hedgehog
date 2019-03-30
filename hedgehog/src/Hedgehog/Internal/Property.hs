@@ -85,7 +85,7 @@ module Hedgehog.Internal.Property (
   ) where
 
 import           Control.Applicative (Alternative(..))
-import           Control.Monad (MonadPlus(..), when)
+import           Control.Monad (MonadPlus(..))
 import           Control.Monad.Base (MonadBase(..))
 import           Control.Monad.Catch (MonadThrow(..), MonadCatch(..))
 import           Control.Monad.Catch (SomeException(..), displayException)
@@ -99,7 +99,7 @@ import           Control.Monad.Trans.Class (MonadTrans(..))
 import           Control.Monad.Trans.Cont (ContT)
 import           Control.Monad.Trans.Control (ComposeSt, defaultLiftBaseWith, defaultRestoreM)
 import           Control.Monad.Trans.Control (MonadBaseControl(..), MonadTransControl(..))
-import           Control.Monad.Trans.Except (ExceptT(..), runExceptT, mapExceptT)
+import           Control.Monad.Trans.Except (ExceptT(..), runExceptT)
 import           Control.Monad.Trans.Identity (IdentityT)
 import           Control.Monad.Trans.Maybe (MaybeT)
 import qualified Control.Monad.Trans.RWS.Lazy as Lazy
@@ -129,8 +129,6 @@ import           Hedgehog.Internal.Show
 import           Hedgehog.Internal.Source
 
 import           Language.Haskell.TH.Lift (deriveLift)
-
-import           System.IO.Error (userError)
 
 ------------------------------------------------------------------------
 
@@ -192,24 +190,22 @@ instance Semigroup Classifier where
 data Classification =
   Classification {
       classificationClassifiers :: !(Map ClassifierName Classifier)
-    , classificationTests :: !Integer
     } deriving (Show)
 
 instance Semigroup Classification where
-  (Classification c1 t1) <> (Classification c2 t2) =
+  (Classification c1) <> (Classification c2) =
     Classification
       (Map.foldrWithKey (Map.insertWith (<>)) c1 c2)
-      (t1 + t2)
 
 instance Monoid Classification where
   mappend =
     (<>)
   mempty =
-    Classification mempty 1
+    Classification mempty
 
-insertClassifier :: ClassifierName -> Double -> Classification -> Classification
-insertClassifier c percentage (Classification classifiers tot) =
-  Classification (Map.insert c (Classifier percentage 1) classifiers) tot
+newClassifier :: ClassifierName -> Double -> Classification
+newClassifier classifierName percentage =
+  Classification (Map.singleton classifierName (Classifier percentage 1))
 
 -- | A test monad allows the assertion of expectations.
 --
@@ -849,36 +845,20 @@ withRetries n =
 --        classify (x > 12 && x < 20) "teens" $
 --          success
 -- @
-classify :: Bool -> String -> PropertyT IO () -> PropertyT IO ()
-classify = cover 0
+classify :: (MonadTest m, HasCallStack) => Bool -> String -> m ()
+classify =
+  cover 0
 
-cover :: Double -> Bool -> String -> PropertyT IO () -> PropertyT IO ()
-cover minCoverage condition s =
+cover :: (MonadTest m, HasCallStack) => Double -> Bool -> String -> m ()
+cover minCoverage condition classifierName =
   if condition then
     let
-      addClassification m = do
-        (r, (cl@(Classification classifiers _), xs)) <- m
-        let classifierName = ClassifierName s
-#if __GLASGOW_HASKELL__ != 802
-        -- FIXME GHC 8.2.1 has a bug with referencing `classifiers` below, thus we need to
-        -- FIXME remove these lines if we're using the 802 series. GHC generates
-        -- FIXME this error:
-        -- FIXME
-        -- FIXME ghc: panic! (the 'impossible' happened)
-        -- FIXME   (GHC version 8.2.1 for x86_64-unknown-linux):
-        -- FIXME         getUnboxedSumName
-        when (Map.member classifierName classifiers) $ throwError . userError $
-          "classification matched duplicate label: \"" <> s <> "\""
-#endif
-        pure (r, (insertClassifier classifierName minCoverage cl, xs))
+      classifier = newClassifier (ClassifierName classifierName) minCoverage
     in
-      PropertyT
-        . TestT
-        . mapExceptT (Lazy.mapWriterT addClassification)
-        . unTest
-        . unPropertyT
+      liftTest $ mkTest (pure (), (classifier, []))
+
   else
-    id
+    pure ()
 
 -- | Creates a property with the default configuration.
 --

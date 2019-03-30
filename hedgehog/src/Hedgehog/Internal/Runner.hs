@@ -198,7 +198,7 @@ checkReport cfg size0 seed0 test0 updateUI =
                       node
 
               Just (Right (), (classification, _)) -> do
-                loop (tests + 1) discards (size + 1) s1 classification
+                loop (tests + 1) discards (size + 1) s1 (classification <> classification0)
   in
     loop 0 0 size0 seed0 mempty
 
