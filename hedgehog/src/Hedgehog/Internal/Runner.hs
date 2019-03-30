@@ -32,8 +32,7 @@ import           Data.Semigroup ((<>))
 
 import           Hedgehog.Internal.Config
 import           Hedgehog.Internal.Gen (runGenT, runDiscardEffect)
-import           Hedgehog.Internal.Property (Classification)
-import           Hedgehog.Internal.Property (Group(..), GroupName(..))
+import           Hedgehog.Internal.Property (Classification, Group(..), GroupName(..))
 import           Hedgehog.Internal.Property (Property(..), PropertyConfig(..), PropertyName(..))
 import           Hedgehog.Internal.Property (ShrinkLimit, ShrinkRetries, withTests)
 import           Hedgehog.Internal.Property (PropertyT(..), Log(..), Failure(..), runTestT)

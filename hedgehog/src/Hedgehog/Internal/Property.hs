@@ -184,12 +184,11 @@ instance Semigroup Classifier where
   (Classifier _ occ1) <> (Classifier percentage occ2) =
     Classifier percentage (occ1 + occ2)
 
--- | Classification are a count of how many times a property has ocurred
---   during a test run
---
-data Classification =
+-- | Classification counts how many times each classifier has
+--   occurred during the complete test run
+newtype Classification =
   Classification {
-      classificationClassifiers :: !(Map ClassifierName Classifier)
+      classificationClassifiers :: Map ClassifierName Classifier
     } deriving (Show)
 
 instance Semigroup Classification where
@@ -833,22 +832,32 @@ withRetries :: ShrinkRetries -> Property -> Property
 withRetries n =
   mapConfig $ \config -> config { propertyShrinkRetries = n }
 
--- | Add a classifier to the test if the predicate is true
+-- | Classify a property by a predicate
 --
 -- @
 --    prop_with_classifier :: Property
 --    prop_with_classifier = property $ do
---      xs <- forAll $ Gen.list (Range.linear 0 100) Gen.alpha
---      for_ xs $ \x ->
---        classify (x == 0) "newborns" $ do
---        classify (x > 0 && x < 13) "children" $
---        classify (x > 12 && x < 20) "teens" $
---          success
+--      x <- forAll $ Gen.int (Range.linear 0 100)
+--      classify (x == 0) "newborns"
+--      classify (x > 0 && x < 13) "children"
+--      classify (x > 12 && x < 20) "teens"
+--      success
 -- @
 classify :: (MonadTest m, HasCallStack) => Bool -> String -> m ()
 classify =
   cover 0
 
+-- | Add coverage requirements to a property
+--
+-- @
+--    prop_with_coverage :: Property
+--    prop_with_coverage = property $ do
+--      x <- forAll $ Gen.int (Range.linear 0 100)
+--      cover 10 (x == 0) "newborns"
+--      cover 10 (x > 0 && x < 13) "children"
+--      cover 10 (x > 12 && x < 20) "teens"
+--      success
+-- @
 cover :: (MonadTest m, HasCallStack) => Double -> Bool -> String -> m ()
 cover minCoverage condition classifierName =
   if condition then
