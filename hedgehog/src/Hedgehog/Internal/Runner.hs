@@ -29,6 +29,7 @@ import qualified Control.Concurrent.STM.TVar as TVar
 import           Control.Monad.Catch (MonadCatch(..), catchAll)
 import           Control.Monad.IO.Class (MonadIO(..))
 
+import           Data.Bits (popCount)
 import           Data.Semigroup ((<>))
 import           Data.Maybe (fromMaybe, isNothing)
 
@@ -166,20 +167,37 @@ checkReport cfg size0 seed0 test0 updateUI =
     confidence =
       propertyConfidence cfg
 
-    successVerified count coverage =
-      count `mod` 100 == 0 &&
-      -- If the user wants a statistically significant result, this function
-      -- will run a confidence check. Otherwise, it will default to checking
-      -- the percentage of encountered labels
-      maybe False (\c -> confidenceSuccess count c coverage) confidence
+    isPowerOfTwo :: TestCount -> Bool
+    isPowerOfTwo =
+      (1 ==) . popCount
 
-    failureVerified count coverage =
-      -- Will be true if we can statistically verify that our coverage was
-      -- inadequate.
-      -- Testing only on 100s to minimise repeated measurement statistical
-      -- errors.
+    defaultMinTests =
+      100
+
+    testLimit =
+      fromMaybe defaultMinTests $
+        propertyTestLimit cfg
+
+    -- Only run statistical tests on powers of 2 * 100.
+    -- This helps mitigate against multiple measurement
+    -- error.
+    runStatisticalTest count =
       count `mod` 100 == 0 &&
-      maybe False (\c -> confidenceFailure count c coverage) confidence
+        isPowerOfTwo (count `div` 100)
+
+    -- Will be true if we can statistically verify that our coverage was
+    -- adequate.
+    -- Also run the statistical test on the test limit, so the desired
+    -- number of tests will be run if everything is well covered.
+    successVerified count coverage =
+      (count == fromIntegral testLimit || runStatisticalTest count) &&
+        maybe False (\c -> confidenceSuccess count c coverage) confidence
+
+    -- Will be true if we can statistically verify that our coverage was
+    -- inadequate.
+    failureVerified count coverage =
+      runStatisticalTest count &&
+        maybe False (\c -> confidenceFailure count c coverage) confidence
 
     loop ::
          TestCount
@@ -192,14 +210,10 @@ checkReport cfg size0 seed0 test0 updateUI =
       updateUI $ Report tests discards coverage0 Running
 
       let
-        testLimit =
-          propertyTestLimit cfg
-        defaultMinTests =
-          100
         hasReachedCoverage =
           successVerified tests coverage0
         enoughTestsRun =
-          tests >= fromIntegral (fromMaybe defaultMinTests testLimit) &&
+          tests >= fromIntegral testLimit &&
             (isNothing (propertyConfidence cfg) || hasReachedCoverage)
 
       if size > 99 then
@@ -219,7 +233,7 @@ checkReport cfg size0 seed0 test0 updateUI =
             0
             (Just coverage0)
             Nothing
-            ("Test coverage cannot be reached after " <> show tests <> " tests")
+            ("Test coverage shown to be unreachable after " <> show (fromIntegral tests) <> " tests")
             Nothing
             []
 

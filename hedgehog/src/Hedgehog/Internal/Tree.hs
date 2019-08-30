@@ -209,7 +209,7 @@ catMaybes m =
       runTree m
   in
     case mx of
-      Nothing -> do
+      Nothing ->
         case Maybe.mapMaybe catMaybes mxs of
           [] ->
             Nothing

@@ -147,6 +147,7 @@ import qualified Control.Monad.Trans.State.Strict as Strict
 import qualified Control.Monad.Trans.Writer.Lazy as Lazy
 import qualified Control.Monad.Trans.Writer.Strict as Strict
 
+import           Data.Bits (Bits)
 import qualified Data.Char as Char
 import           Data.Functor.Identity (Identity(..))
 import           Data.Int (Int64)
@@ -272,7 +273,7 @@ newtype TestLimit =
 --
 newtype TestCount =
   TestCount Int
-  deriving (Eq, Ord, Show, Num, Enum, Real, Integral)
+  deriving (Eq, Ord, Show, Num, Enum, Real, Integral, Bits)
 
 -- | The number of tests a property had to discard.
 --
