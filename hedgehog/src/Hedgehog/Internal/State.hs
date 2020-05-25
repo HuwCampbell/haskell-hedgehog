@@ -2,6 +2,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -74,7 +75,7 @@ import           Data.Typeable (Typeable, TypeRep, Proxy(..), typeRep)
 import           Hedgehog.Internal.Distributive (distributeT)
 import           Hedgehog.Internal.Gen (MonadGen, GenT, GenBase)
 import qualified Hedgehog.Internal.Gen as Gen
-import           Hedgehog.Internal.HTraversable (HTraversable(..))
+import           Hedgehog.Internal.HTraversable (FunctorB(..), TraversableB (..), Rec (..), Generic)
 import           Hedgehog.Internal.Opaque (Opaque(..))
 import           Hedgehog.Internal.Property (MonadTest(..), Test, evalEither, evalM, success, runTest, failWith, annotate)
 import           Hedgehog.Internal.Range (Range)
@@ -174,7 +175,7 @@ instance Ord1 Concrete where
 --   values are turned into 'Concrete' ones.
 --
 newtype Var a v =
-  Var (v a)
+  Var (v a) deriving (Generic)
 
 -- | Take the value from a concrete variable.
 --
@@ -202,9 +203,9 @@ instance (Show a, Show1 v) => Show (Var a v) where
       showString "Var " .
       showsPrec1 11 x
 
-instance HTraversable (Var a) where
-  htraverse f (Var v) =
-    fmap Var (f v)
+
+instance FunctorB (Var a) where
+instance TraversableB (Var a) where
 
 ------------------------------------------------------------------------
 -- Symbolic Environment
@@ -262,9 +263,9 @@ reifyEnvironment (Environment vars) (Symbolic n) =
 
 -- | Convert a symbolic structure to a concrete one, using the provided environment.
 --
-reify :: HTraversable t => Environment -> t Symbolic -> Either EnvironmentError (t Concrete)
+reify :: TraversableB t => Environment -> t Symbolic -> Either EnvironmentError (t Concrete)
 reify vars =
-  htraverse (reifyEnvironment vars)
+  btraverse (reifyEnvironment vars)
 
 ------------------------------------------------------------------------
 -- Callbacks
@@ -377,7 +378,7 @@ callbackEnsure callbacks s0 s i o =
 --
 data Command gen m (state :: (* -> *) -> *) =
   forall input output.
-  (HTraversable input, Show (input Symbolic), Show output, Typeable output) =>
+  (TraversableB input, Show (input Symbolic), Show output, Typeable output) =>
   Command {
     -- | A generator which provides random arguments for a command. If the
     --   command cannot be executed in the current state, it should return
@@ -409,7 +410,7 @@ commandGenOK (Command inputGen _ _) state =
 --
 data Action m (state :: (* -> *) -> *) =
   forall input output.
-  (HTraversable input, Show (input Symbolic), Show output) =>
+  (TraversableB input, Show (input Symbolic), Show output) =>
   Action {
       actionInput ::
         input Symbolic
@@ -457,19 +458,19 @@ insertSymbolic s =
 -- | Collects all the symbolic values in a data structure and produces a set of
 --   all the variables they refer to.
 --
-takeVariables :: forall t. HTraversable t => t Symbolic -> Map Name TypeRep
+takeVariables :: forall t. TraversableB t => t Symbolic -> Map Name TypeRep
 takeVariables xs =
   let
     go x = do
       modify (insertSymbolic x)
       pure x
   in
-    flip execState Map.empty $ htraverse go xs
+    flip execState Map.empty $ btraverse go xs
 
 -- | Checks that the symbolic values in the data structure refer only to the
 --   variables in the provided set, and that they are of the correct type.
 --
-variablesOK :: HTraversable t => t Symbolic -> Map Name TypeRep -> Bool
+variablesOK :: TraversableB t => t Symbolic -> Map Name TypeRep -> Bool
 variablesOK xs allowed =
   let
     vars =

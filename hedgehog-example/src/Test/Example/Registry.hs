@@ -1,6 +1,7 @@
 --
 -- Translated from https://github.com/rjmh/registry/blob/master/registry_eqc.erl
 --
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -19,6 +20,7 @@ import           Data.Maybe (isJust, isNothing)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 
+import           GHC.Generics
 import           Hedgehog
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Internal.State as Gen
@@ -47,7 +49,7 @@ data State v =
   State {
       statePids :: Set (Var Pid v)
     , stateRegs :: Map Name (Var Pid v)
-    } deriving (Eq, Show)
+    } deriving (Eq, Show, Generic)
 
 initialState :: State v
 initialState =
@@ -68,11 +70,10 @@ initialState =
 
 data Spawn (v :: * -> *) =
   Spawn
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
 
-instance HTraversable Spawn where
-  htraverse _ Spawn =
-    pure Spawn
+instance FunctorB Spawn where
+instance TraversableB Spawn where
 
 spawn :: (Monad n, MonadIO m) => Command n m State
 spawn =
@@ -115,13 +116,10 @@ spawn =
 
 data Register v =
   Register Name (Var Pid v)
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
 
-instance HTraversable Register where
-  htraverse f (Register name pid) =
-    Register
-      <$> pure name
-      <*> htraverse f pid
+instance FunctorB Register where
+instance TraversableB Register where
 
 genName :: MonadGen m => m Name
 genName =
@@ -175,11 +173,10 @@ register =
 
 data Unregister (v :: * -> *) =
   Unregister Name
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
 
-instance HTraversable Unregister where
-  htraverse _ (Unregister name) =
-    Unregister <$> pure name
+instance FunctorB Unregister where
+instance TraversableB Unregister where
 
 unregister :: (MonadGen n, MonadIO m) => Command n m State
 unregister =
